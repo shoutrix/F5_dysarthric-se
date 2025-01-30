@@ -1,0 +1,52 @@
+# 0 "F5TTS_Small_train.yaml"
+# 0 "<built-in>"
+# 0 "<command-line>"
+# 1 "/usr/include/stdc-predef.h" 1 3 4
+# 0 "<command-line>" 2
+# 1 "F5TTS_Small_train.yaml"
+hydra:
+  run:
+    dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+datasets:
+  name: Emilia_ZH_EN
+  batch_size_per_gpu: 129600 # 8 GPUs, 8 * 38400 = 307200
+  batch_size_type: frame # "frame" or "sample"
+  max_samples: 96 # max sequences per batch if use frame-wise batch_size. we set 32 for small models, 64 for base models
+  num_workers: 16
+
+optim:
+  epochs: 500
+  learning_rate: 7.5e-5
+  num_warmup_updates: 30000 # warmup steps
+  grad_accumulation_steps: 1 # note: updates = steps / grad_accumulation_steps
+  max_grad_norm: 1.0 # gradient clipping
+  bnb_optimizer: False # use bnb 8bit AdamW optimizer or not
+
+model:
+  name: F5TTS_Small
+  tokenizer: pinyin
+  tokenizer_path: None # if tokenizer = 'custom', define the path to the tokenizer you want to use (should be vocab.txt)
+  arch:
+    dim: 256
+    depth: 6
+    heads: 4
+    ff_mult: 4
+    embed_dim: 256
+    conv_layers: 2
+    checkpoint_activations: False # recompute activations and save memory for extra compute
+  mel_spec:
+    target_sample_rate: 16000
+    hop_length: 160
+    win_length: 400
+    n_fft: 512
+    mel_spec_type: vocos # 'vocos' or 'bigvgan'
+  vocoder:
+    is_local: False # use local offline ckpt or not
+    local_path: None # local vocoder path
+
+ckpts:
+  logger: wandb # wandb | tensorboard | None
+  save_per_updates: 50000 # save checkpoint per steps
+  last_per_steps: 5000 # save last checkpoint per steps
+  save_dir: ckpts/${model.name}_${model.mel_spec.mel_spec_type}_${model.tokenizer}_${datasets.name}

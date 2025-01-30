@@ -26,7 +26,10 @@ from f5_tts.model.utils import (
     list_str_to_idx,
     list_str_to_tensor,
     mask_from_frac_lengths,
+    apply_vtln,
 )
+
+
 
 
 class CFM(nn.Module):
@@ -45,9 +48,11 @@ class CFM(nn.Module):
         mel_spec_module: nn.Module | None = None,
         mel_spec_kwargs: dict = dict(),
         frac_lengths_mask: tuple[float, float] = (0.7, 1.0),
-        vocab_char_map: dict[str:int] | None = None,
+        pad_with_filler = False
     ):
         super().__init__()
+        
+        print("initializing cfm2")
 
         self.frac_lengths_mask = frac_lengths_mask
 
@@ -72,7 +77,12 @@ class CFM(nn.Module):
         self.odeint_kwargs = odeint_kwargs
 
         # vocab map for tokenization
-        self.vocab_char_map = vocab_char_map
+        self.pad_with_filler = pad_with_filler
+
+        self.clean_pad_embed = nn.Embedding(1, num_channels)
+        # self.clean_pad_embed = nn.Parameter(torch.randn(1, num_channels))
+            
+        
 
     @property
     def device(self):
@@ -82,8 +92,7 @@ class CFM(nn.Module):
     def sample(
         self,
         cond: float["b n d"] | float["b nw"],  # noqa: F722
-        text: int["b nt"] | list[str],  # noqa: F722
-        duration: int | int["b"],  # noqa: F821
+        gen_dys_audio,
         *,
         lens: int["b"] | None = None,  # noqa: F821
         steps=32,
@@ -99,152 +108,142 @@ class CFM(nn.Module):
     ):
         self.eval()
         # raw wave
+        
+        print("\n\nshapes : ")
+        print(cond.shape, gen_dys_audio.shape)
+        cond = cond[:, :24000]
+        print(cond.shape, gen_dys_audio.shape)
+
 
         if cond.ndim == 2:
             cond = self.mel_spec(cond)
             cond = cond.permute(0, 2, 1)
             assert cond.shape[-1] == self.num_channels
 
+            
+        if gen_dys_audio.ndim==2:
+            gen_dys_audio = self.mel_spec(gen_dys_audio)
+            gen_dys_audio = gen_dys_audio.permute(0, 2, 1)
+            assert gen_dys_audio.shape[-1] == self.num_channels
+            
         cond = cond.to(next(self.parameters()).dtype)
+        gen_dys_audio = gen_dys_audio.to(next(self.parameters()).dtype)
+        
+        batch, seq_len, dtype, device = *cond.shape[:2], cond.dtype, cond.device
+        assert batch == 1, f"batch size 1 is only supported but found {batch}"
+        
+        
+        print("shapes : ", cond.shape, gen_dys_audio.shape)
 
-        batch, cond_seq_len, device = *cond.shape[:2], cond.device
-        if not exists(lens):
-            lens = torch.full((batch,), cond_seq_len, device=device, dtype=torch.long)
+        if self.pad_with_filler:
+            lens = torch.tensor(seq_len, dtype=torch.long)
+            # print(dys_audio.shape)
+            dys_max_len = gen_dys_audio.shape[1]
+            duration = dys_max_len
+            max_duration = duration
+            # assert max_duration <= dys_max_len # shouldn't use assert during batch inference
 
-        # text
 
-        if isinstance(text, list):
-            if exists(self.vocab_char_map):
-                text = list_str_to_idx(text, self.vocab_char_map).to(device)
-            else:
-                text = list_str_to_tensor(text).to(device)
-            assert text.shape[0] == batch
+            cond_mask = torch.ones((1, lens), dtype=torch.bool, device = cond.device)
+            cond_mask = F.pad(cond_mask, (0, duration-lens), value=False)
+            # print(cond_mask.shape)
+            cond_mask = cond_mask.unsqueeze(-1)
 
-        # duration
-
-        cond_mask = lens_to_mask(lens)
-        if edit_mask is not None:
-            cond_mask = cond_mask & edit_mask
-
-        if isinstance(duration, int):
-            duration = torch.full((batch,), duration, device=device, dtype=torch.long)
-
-        duration = torch.maximum(
-            torch.maximum((text != -1).sum(dim=-1), lens) + 1, duration
-        )  # duration at least text/audio prompt length plus one token, so something is generated
-        duration = duration.clamp(max=max_duration)
-        max_duration = duration.amax()
-
-        # duplicate test corner for inner time step oberservation
-        if duplicate_test:
-            test_cond = F.pad(cond, (0, 0, cond_seq_len, max_duration - 2 * cond_seq_len), value=0.0)
-
-        cond = F.pad(cond, (0, 0, 0, max_duration - cond_seq_len), value=0.0)
-        if no_ref_audio:
-            cond = torch.zeros_like(cond)
-
-        cond_mask = F.pad(cond_mask, (0, max_duration - cond_mask.shape[-1]), value=False)
-        cond_mask = cond_mask.unsqueeze(-1)
-        step_cond = torch.where(
-            cond_mask, cond, torch.zeros_like(cond)
-        )  # allow direct control (cut cond audio) with lens passed in
-
-        if batch > 1:
-            mask = lens_to_mask(duration)
-        else:  # save memory and speed up, as single inference need no mask currently
-            mask = None
-
-        # neural ode
-
+            cond = F.pad(cond, (0, 0, 0, (max_duration-seq_len)), value=0.0)
+            
+        step_cond = cond
+        
+        mask = None
+        
         def fn(t, x):
-            # at each step, conditioning is fixed
-            # step_cond = torch.where(cond_mask, cond, torch.zeros_like(cond))
-
-            # predict flow
             pred = self.transformer(
-                x=x, cond=step_cond, text=text, time=t, mask=mask, drop_audio_cond=False, drop_text=False
+                x=x, cond=step_cond, noisy_mel=gen_dys_audio, time=t, mask=mask, drop_audio_cond=False, drop_noisy_mel=False, filler_embed=self.clean_pad_embed
             )
             if cfg_strength < 1e-5:
                 return pred
 
             null_pred = self.transformer(
-                x=x, cond=step_cond, text=text, time=t, mask=mask, drop_audio_cond=True, drop_text=True
+                x=x, cond=step_cond, noisy_mel=gen_dys_audio, time=t, mask=mask, drop_audio_cond=True, drop_noisy_mel=True, filler_embed=self.clean_pad_embed
             )
             return pred + (pred - null_pred) * cfg_strength
 
-        # noise input
-        # to make sure batch inference result is same with different batch size, and for sure single inference
-        # still some difference maybe due to convolutional layers
         y0 = []
-        for dur in duration:
-            if exists(seed):
-                torch.manual_seed(seed)
-            y0.append(torch.randn(dur, self.num_channels, device=self.device, dtype=step_cond.dtype))
+        if exists(seed):
+            torch.manual_seed(seed)
+        y0.append(torch.randn(dys_max_len, self.num_channels, device=self.device, dtype=step_cond.dtype))
         y0 = pad_sequence(y0, padding_value=0, batch_first=True)
 
         t_start = 0
 
-        # duplicate test corner for inner time step oberservation
-        if duplicate_test:
-            t_start = t_inter
-            y0 = (1 - t_start) * y0 + t_start * test_cond
-            steps = int(steps * (1 - t_start))
 
         t = torch.linspace(t_start, 1, steps + 1, device=self.device, dtype=step_cond.dtype)
         if sway_sampling_coef is not None:
             t = t + sway_sampling_coef * (torch.cos(torch.pi / 2 * t) - 1 + t)
 
+        # print("dtypes :", y0.dtype, t.dtype)
         trajectory = odeint(fn, y0, t, **self.odeint_kwargs)
 
         sampled = trajectory[-1]
         out = sampled
-        out = torch.where(cond_mask, cond, out)
-
+        print("outs")
+        print(out.shape)
+        # out = torch.where(cond_mask, step_cond, out)
+        # print(out.shape)
+        # 
+        # out = out[:, :max_duration, :]
+        # print(out.shape)
+        # out = out[:, :408, :]
         if exists(vocoder):
             out = out.permute(0, 2, 1)
             out = vocoder(out)
 
-        return out, trajectory
+        # print(out.shape)
+        # out = out[:, :, :]
+        print("aà", out.shape)
+        
+        return out, trajectory  
+
 
     def forward(
         self,
-        inp: float["b n d"] | float["b nw"],  # mel or raw wave  # noqa: F722
-        text: int["b nt"] | list[str],  # noqa: F722
-        *,
-        lens: int["b"] | None = None,  # noqa: F821
+        clean_mel, # shape : list((d,n))
+        clean_mel_lengths, # shape : (b)
+        noisy_mel, # shape : (b, n, d)
+        noisy_mel_lengths, # shape : (b)
         noise_scheduler: str | None = None,
     ):
-        # handle raw wave
-        if inp.ndim == 2:
-            inp = self.mel_spec(inp)
-            inp = inp.permute(0, 2, 1)
-            assert inp.shape[-1] == self.num_channels
 
-        batch, seq_len, dtype, device, _σ1 = *inp.shape[:2], inp.dtype, self.device, self.sigma
 
-        # handle text as string
-        if isinstance(text, list):
-            if exists(self.vocab_char_map):
-                text = list_str_to_idx(text, self.vocab_char_map).to(device)
-            else:
-                text = list_str_to_tensor(text).to(device)
-            assert text.shape[0] == batch
+        batch, dtype, device, _σ1 = len(clean_mel), noisy_mel.dtype, self.device, self.sigma        
+        max_noisy_mel = torch.max(noisy_mel_lengths)
+            
+        if self.pad_with_filler:
+            padded_clean_mel = []        
+            for mel in clean_mel:
+                mel = mel.transpose(0,1).to(dtype) # d,n -> n,d
+                if mel.shape[0] < max_noisy_mel:
+                    pad_size = max_noisy_mel - mel.shape[0]
+                    padding = self.clean_pad_embed[0].repeat(pad_size, 1)
+                    padded_mel = torch.cat([mel, padding], dim=0)
+                else:
+                    padded_mel = mel[:max_noisy_mel]
+                padded_clean_mel.append(padded_mel)
+            padded_clean_mel = torch.stack(padded_clean_mel)
+        else:
+            padded_clean_mel = clean_mel
+            assert padded_clean_mel.shape == noisy_mel.shape
 
-        # lens and mask
-        if not exists(lens):
-            lens = torch.full((batch,), seq_len, device=device)
+        seq_len = padded_clean_mel.shape[1]
+        mask = lens_to_mask(clean_mel_lengths, length=seq_len)
 
-        mask = lens_to_mask(lens, length=seq_len)  # useless here, as collate_fn will pad to max length in batch
-
-        # get a random span to mask out for training conditionally
         frac_lengths = torch.zeros((batch,), device=self.device).float().uniform_(*self.frac_lengths_mask)
-        rand_span_mask = mask_from_frac_lengths(lens, frac_lengths)
+        rand_span_mask = mask_from_frac_lengths(clean_mel_lengths, frac_lengths, max_len = seq_len)
 
         if exists(mask):
             rand_span_mask &= mask
 
         # mel is x1
-        x1 = inp
+        x1 = padded_clean_mel
 
         # x0 is gaussian noise
         x0 = torch.randn_like(x1)
@@ -260,23 +259,23 @@ class CFM(nn.Module):
 
         # only predict what is within the random mask span for infilling
         cond = torch.where(rand_span_mask[..., None], torch.zeros_like(x1), x1)
+        number_of_zeros = (cond == 0).sum().item()
 
         # transformer and cfg training with a drop rate
         drop_audio_cond = random() < self.audio_drop_prob  # p_drop in voicebox paper
         if random() < self.cond_drop_prob:  # p_uncond in voicebox paper
             drop_audio_cond = True
-            drop_text = True
+            drop_noisy_mel = True
         else:
-            drop_text = False
+            drop_noisy_mel = False
 
         # if want rigourously mask out padding, record in collate_fn in dataset.py, and pass in here
         # adding mask will use more memory, thus also need to adjust batchsampler with scaled down threshold for long sequences
         pred = self.transformer(
-            x=φ, cond=cond, text=text, time=time, drop_audio_cond=drop_audio_cond, drop_text=drop_text
+            x=φ, cond=cond, noisy_mel=noisy_mel, time=time, drop_audio_cond=drop_audio_cond, drop_noisy_mel=drop_noisy_mel
         )
 
         # flow matching loss
         loss = F.mse_loss(pred, flow, reduction="none")
         loss = loss[rand_span_mask]
-
         return loss.mean(), cond, pred

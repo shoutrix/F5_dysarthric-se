@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from tqdm import tqdm
 
 from f5_tts.model import CFM
-from f5_tts.model.dysarthric_dataset import DynamicBatchSampler, collate_fn
+from f5_tts.model.stft_dataset import DynamicBatchSampler, collate_fn
 from f5_tts.model.utils import default, exists
 
 # trainer
@@ -98,8 +98,6 @@ class Trainer:
         if self.is_main:
             self.ema_model = EMA(model, include_online_model=False, **ema_kwargs)
             self.ema_model.to(self.accelerator.device)
-            
-        # print(self.ema_model)
 
         self.epochs = epochs
         self.num_warmup_updates = num_warmup_updates
@@ -177,13 +175,7 @@ class Trainer:
                 del checkpoint["ema_model_state_dict"][key]
 
         if self.is_main:
-            ema_model_state_dict = checkpoint["ema_model_state_dict"]
-            # if "ema_model.clean_pad_embed" not in ema_model_state_dict:
-            #     print("Adding 'ema_model.clean_pad_embed' to ema_model_state_dict...")
-            #     ema_model_state_dict["ema_model.clean_pad_embed.weight"] = self.ema_model.ema_model.clean_pad_embed.weight
-                # ema_model_state_dict["clean_pad_embed"] = self.ema_model.ema_model.clean_pad_embed
-
-            self.ema_model.load_state_dict(ema_model_state_dict, strict=False)
+            self.ema_model.load_state_dict(checkpoint["ema_model_state_dict"])
 
         if "step" in checkpoint:
             # patch for backward compatibility, 305e3ea
@@ -191,10 +183,7 @@ class Trainer:
                 if key in checkpoint["model_state_dict"]:
                     del checkpoint["model_state_dict"][key]
 
-            # print("optimizer state dict : ", checkpoint["optimizer_state_dict"])
-            print(len(self.optimizer.param_groups))
-
-            self.accelerator.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"], strict=False)
+            self.accelerator.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"])
             self.accelerator.unwrap_model(self.optimizer).load_state_dict(checkpoint["optimizer_state_dict"])
             if self.scheduler:
                 self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
@@ -311,8 +300,7 @@ class Trainer:
                 with self.accelerator.accumulate(self.model):
                     noisy_mel = batch["noisy_mel"].permute(0, 2, 1)
                     clean_mel = batch["clean_mel"].permute(0, 2, 1)
-                    noisy_mel_lengths = batch["noisy_mel_lengths"]
-                    clean_mel_lengths = batch["clean_mel_lengths"]
+                    lengths = batch["lengths"]
                     
                     # print(noisy_mel.shape)
                     
@@ -332,11 +320,7 @@ class Trainer:
                     #     self.accelerator.log({"duration loss": dur_loss.item()}, step=global_step)
 
                     loss, cond, pred = self.model(
-                        clean_mel=clean_mel,
-                        noisy_mel=noisy_mel,
-                        clean_mel_lengths=clean_mel_lengths,
-                        noisy_mel_lengths=noisy_mel_lengths,
-                        noise_scheduler=self.noise_scheduler
+                        clean_mel, noisy_mel=noisy_mel, lengths=lengths, noise_scheduler=self.noise_scheduler
                     )
                     self.accelerator.backward(loss)
 

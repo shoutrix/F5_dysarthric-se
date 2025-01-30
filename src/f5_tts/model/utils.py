@@ -10,6 +10,10 @@ from torch.nn.utils.rnn import pad_sequence
 
 import jieba
 from pypinyin import lazy_pinyin, Style
+import tempfile
+from pydub import AudioSegment, silence
+
+
 
 
 # seed everything
@@ -37,6 +41,40 @@ def default(v, d):
 
 
 # tensor helpers
+def remove_silence_edges(audio, silence_threshold=-42):
+    # Remove silence from the start
+    non_silent_start_idx = silence.detect_leading_silence(audio, silence_threshold=silence_threshold)
+    audio = audio[non_silent_start_idx:]
+
+    # Remove silence from the end
+    non_silent_end_duration = audio.duration_seconds
+    for ms in reversed(audio):
+        if ms.dBFS > silence_threshold:
+            break
+        non_silent_end_duration -= 0.001
+    trimmed_audio = audio[: int(non_silent_end_duration * 1000)]
+
+    return trimmed_audio
+
+
+def remove_silence(ref_audio_orig, clip_short=True, show_info=print):
+    show_info("Converting audio...")
+
+    aseg = AudioSegment.from_file(ref_audio_orig)
+
+    if clip_short:
+        # 1. try to find long silence for clipping
+        non_silent_segs = silence.split_on_silence(
+            aseg, min_silence_len=1000, silence_thresh=-50, keep_silence=1000, seek_step=10
+        )
+        non_silent_wave = AudioSegment.silent(duration=0)
+        for non_silent_seg in non_silent_segs:
+            non_silent_wave += non_silent_seg
+        
+    
+    aseg = AudioSegment.silent(duration=400) + remove_silence_edges(aseg) + AudioSegment.silent(duration=400)
+    sample = torch.tensor(aseg.get_array_of_samples())
+    return sample
 
 
 def lens_to_mask(t: int["b"], length: int | None = None) -> bool["b n"]:  # noqa: F722 F821
@@ -47,23 +85,28 @@ def lens_to_mask(t: int["b"], length: int | None = None) -> bool["b n"]:  # noqa
     return seq[None, :] < t[:, None]
 
 
-def mask_from_start_end_indices(seq_len: int["b"], start: int["b"], end: int["b"]):  # noqa: F722 F821
-    max_seq_len = seq_len.max().item()
+def mask_from_start_end_indices(seq_len: int["b"], start: int["b"], end: int["b"], max_len):  # noqa: F722 F821
+    max_seq_len = max_len
+    # print("max seq len", max_seq_len)
     seq = torch.arange(max_seq_len, device=start.device).long()
     start_mask = seq[None, :] >= start[:, None]
+    # print("start mask", start_mask)
     end_mask = seq[None, :] < end[:, None]
+    # print("end mask", end_mask)
+    # print("start_mask & end_mask", start_mask & end_mask)
     return start_mask & end_mask
 
 
-def mask_from_frac_lengths(seq_len: int["b"], frac_lengths: float["b"]):  # noqa: F722 F821
+def mask_from_frac_lengths(seq_len: int["b"], frac_lengths: float["b"], max_len):  # noqa: F722 F821
     lengths = (frac_lengths * seq_len).long()
     max_start = seq_len - lengths
 
     rand = torch.rand_like(frac_lengths)
     start = (max_start * rand).long().clamp(min=0)
     end = start + lengths
-
-    return mask_from_start_end_indices(seq_len, start, end)
+    # print("start", start)
+    # print("end", end)
+    return mask_from_start_end_indices(seq_len, start, end, max_len)
 
 
 def maybe_masked_mean(t: float["b n d"], mask: bool["b n"] = None) -> float["b d"]:  # noqa: F722
@@ -75,6 +118,14 @@ def maybe_masked_mean(t: float["b n d"], mask: bool["b n"] = None) -> float["b d
     den = mask.float().sum(dim=1)
 
     return num / den.clamp(min=1.0)
+
+def apply_vtln(mel_spectrogram, warp_factor=1.1):
+    B, time_steps, n_mels = mel_spectrogram.shape
+    original_freqs = torch.arange(n_mels)
+    warped_freqs = torch.clamp((original_freqs * warp_factor).long(), max=n_mels - 1)
+    warped_spectrogram = mel_spectrogram[..., warped_freqs]
+    return warped_spectrogram
+
 
 
 # simple utf-8 tokenizer, since paper went character based
@@ -96,8 +147,6 @@ def list_str_to_idx(
 
 
 # Get tokenizer
-
-
 def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
     """
     tokenizer   - "pinyin" do g2p for only chinese characters, need .txt vocab_file

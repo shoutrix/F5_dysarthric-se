@@ -25,10 +25,40 @@ from f5_tts.model.modules import (
     get_pos_embed_indices,
 )
 
+# Noisy Mel embeddding
+class NoisyMelEmbedding(nn.Module):
+    def __init__(self, mel_dim, embed_dim, conv_layers=0, conv_mult=2):
+        super().__init__()
+        
+        self.proj = nn.Linear(mel_dim, embed_dim)
+        if conv_layers > 0:
+            self.extra_modeling = True
+            self.precompute_max_pos = 4096  # ~44s of 24khz audio
+            self.register_buffer("freqs_cis", precompute_freqs_cis(embed_dim, self.precompute_max_pos), persistent=False)
+            self.conv_blocks = nn.Sequential(
+                *[ConvNeXtV2Block(embed_dim, embed_dim * conv_mult) for _ in range(conv_layers)]
+            )
+        else:
+            self.extra_modeling = False
+    
+    def forward(self, noisy_mel, seq_len):
+        # possible extra modeling
+        batch = noisy_mel.shape[0]
+        noisy_mel = self.proj(noisy_mel)
+        if self.extra_modeling:
+            # sinus pos emb
+            batch_start = torch.zeros((batch,), dtype=torch.long)
+            pos_idx = get_pos_embed_indices(batch_start, seq_len, max_pos=self.precompute_max_pos)
+            noisy_mel_pos_embed = self.freqs_cis[pos_idx]
+            noisy_mel = noisy_mel + noisy_mel_pos_embed
+
+            # convnextv2 blocks
+            noisy_mel = self.conv_blocks(noisy_mel)
+
+        return noisy_mel
+
 
 # Text embedding
-
-
 class TextEmbedding(nn.Module):
     def __init__(self, text_num_embeds, text_dim, conv_layers=0, conv_mult=2):
         super().__init__()
@@ -43,6 +73,7 @@ class TextEmbedding(nn.Module):
             )
         else:
             self.extra_modeling = False
+            
 
     def forward(self, text: int["b nt"], seq_len, drop_text=False):  # noqa: F722
         text = text + 1  # use 0 as filler token. preprocess of batch pad -1, see list_str_to_idx()
@@ -73,16 +104,18 @@ class TextEmbedding(nn.Module):
 
 
 class InputEmbedding(nn.Module):
-    def __init__(self, mel_dim, text_dim, out_dim):
+    def __init__(self, mel_dim, embed_dim, out_dim):
         super().__init__()
-        self.proj = nn.Linear(mel_dim * 2 + text_dim, out_dim)
+        self.proj = nn.Linear(2*mel_dim + embed_dim, out_dim)
         self.conv_pos_embed = ConvPositionEmbedding(dim=out_dim)
 
-    def forward(self, x: float["b n d"], cond: float["b n d"], text_embed: float["b n d"], drop_audio_cond=False):  # noqa: F722
+    def forward(self, x: float["b n d"], cond: float["b n d"], noisy_mel_embedding: float["b n d"], drop_audio_cond=False):  # noqa: F722
+        # print(x.shape, cond.shape, noisy_mel_embedding.shape)
+
         if drop_audio_cond:  # cfg for cond audio
             cond = torch.zeros_like(cond)
 
-        x = self.proj(torch.cat((x, cond, text_embed), dim=-1))
+        x = self.proj(torch.cat((x, cond, noisy_mel_embedding), dim=-1))
         x = self.conv_pos_embed(x) + x
         return x
 
@@ -94,6 +127,7 @@ class DiT(nn.Module):
     def __init__(
         self,
         *,
+        embed_dim,
         dim,
         depth=8,
         heads=8,
@@ -101,8 +135,6 @@ class DiT(nn.Module):
         dropout=0.1,
         ff_mult=4,
         mel_dim=100,
-        text_num_embeds=256,
-        text_dim=None,
         conv_layers=0,
         long_skip_connection=False,
         checkpoint_activations=False,
@@ -110,10 +142,9 @@ class DiT(nn.Module):
         super().__init__()
 
         self.time_embed = TimestepEmbedding(dim)
-        if text_dim is None:
-            text_dim = mel_dim
-        self.text_embed = TextEmbedding(text_num_embeds, text_dim, conv_layers=conv_layers)
-        self.input_embed = InputEmbedding(mel_dim, text_dim, dim)
+
+        self.noisy_mel_embed = NoisyMelEmbedding(mel_dim, embed_dim, conv_layers=conv_layers)
+        self.input_embed = InputEmbedding(mel_dim, embed_dim, dim)
 
         self.rotary_embed = RotaryEmbedding(dim_head)
 
@@ -142,20 +173,29 @@ class DiT(nn.Module):
         self,
         x: float["b n d"],  # nosied input audio  # noqa: F722
         cond: float["b n d"],  # masked cond audio  # noqa: F722
-        text: int["b nt"],  # text  # noqa: F722
+        noisy_mel: float["b n d"],  # text  # noqa: F722
         time: float["b"] | float[""],  # time step  # noqa: F821 F722
         drop_audio_cond,  # cfg for cond audio
-        drop_text,  # cfg for text
+        drop_noisy_mel,  # cfg for text
         mask: bool["b n"] | None = None,  # noqa: F722
     ):
+        
+        # print("\n\nDit forward shapes : ", x.shape, cond.shape, noisy_mel.shape)
         batch, seq_len = x.shape[0], x.shape[1]
         if time.ndim == 0:
             time = time.repeat(batch)
 
         # t: conditioning time, c: context (text + masked cond audio), x: noised input audio
         t = self.time_embed(time)
-        text_embed = self.text_embed(text, seq_len, drop_text=drop_text)
-        x = self.input_embed(x, cond, text_embed, drop_audio_cond=drop_audio_cond)
+        
+        if drop_noisy_mel:
+            noisy_mel = torch.zeros_like(noisy_mel)
+        
+        noisy_mel_embed = self.noisy_mel_embed(noisy_mel, seq_len) 
+        # x = self.noisy_mel_embed(x, seq_len)
+        # cond = self.noisy_mel_embed(cond, seq_len)
+        
+        x = self.input_embed(x, cond, noisy_mel_embed, drop_audio_cond=drop_audio_cond)
 
         rope = self.rotary_embed.forward_from_seq_len(seq_len)
 
