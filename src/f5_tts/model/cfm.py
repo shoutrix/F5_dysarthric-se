@@ -48,7 +48,7 @@ class CFM(nn.Module):
         mel_spec_module: nn.Module | None = None,
         mel_spec_kwargs: dict = dict(),
         frac_lengths_mask: tuple[float, float] = (0.7, 1.0),
-        pad_with_filler = False
+        pad_with_filler = False,
         pretraining = True
     ):
         super().__init__()
@@ -135,7 +135,7 @@ class CFM(nn.Module):
         batch, seq_len, dtype, device = *cond.shape[:2], cond.dtype, cond.device
         assert batch == 1, f"batch size 1 is only supported but found {batch}"
         
-        
+        print(f"infering pretrained model : {self.pretraining}")
         print("shapes : ", cond.shape, noisy_audio.shape)
 
         noisy_max_len = noisy_audio.shape[1]
@@ -155,13 +155,13 @@ class CFM(nn.Module):
         
         def fn(t, x):
             pred = self.transformer(
-                x=x, cond=cond, noisy_mel=noisy_audio, time=t, mask=mask, drop_audio_cond=False, drop_noisy_mel=False, filler_embed=self.clean_pad_embed
+                x=x, cond=cond, noisy_mel=noisy_audio, time=t, mask=mask, drop_audio_cond=False, drop_noisy_mel=False
             )
             if cfg_strength < 1e-5:
                 return pred
 
             null_pred = self.transformer(
-                x=x, cond=cond, noisy_mel=noisy_audio, time=t, mask=mask, drop_audio_cond=True, drop_noisy_mel=True, filler_embed=self.clean_pad_embed
+                x=x, cond=cond, noisy_mel=noisy_audio, time=t, mask=mask, drop_audio_cond=True, drop_noisy_mel=True
             )
             return pred + (pred - null_pred) * cfg_strength
 

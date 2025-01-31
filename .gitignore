@@ -173,3 +173,4 @@ cython_debug/
 #.idea/
 data ckpts
 F5_dysarthric-se
+src/f5_tts/infer/sample_test/121_127105_000008_000002.wav src/f5_tts/infer/sample_test/121_127105_000012_000001.wav src/f5_tts/infer/sample_test/121_127105_000043_000004.wav src/f5_tts/infer/sample_test/260_123286_000005_000001.wav src/f5_tts/infer/sample_test/260_123286_000057_000001.wav

@@ -237,30 +237,19 @@ def load_model(
     ode_method=ode_method,
     use_ema=True,
     device=device,
+    pretrain=True,
 ):
-    if vocab_file == "":
-        vocab_file = str(files("f5_tts").joinpath("infer/examples/vocab.txt"))
-    tokenizer = "custom"
 
-    print("\nvocab : ", vocab_file)
-    print("token : ", tokenizer)
-    print("model : ", ckpt_path, "\n")
 
-    vocab_char_map, vocab_size = get_tokenizer(vocab_file, tokenizer)
+    print(model_cfg)
+
     model = CFM(
-        transformer=model_cls(**model_cfg, text_num_embeds=vocab_size, mel_dim=n_mel_channels),
-        mel_spec_kwargs=dict(
-            n_fft=n_fft,
-            hop_length=hop_length,
-            win_length=win_length,
-            n_mel_channels=n_mel_channels,
-            target_sample_rate=target_sample_rate,
-            mel_spec_type=mel_spec_type,
-        ),
+        transformer=model_cls(**model_cfg.model.arch, mel_dim=model_cfg.model.mel_spec.n_mel_channels),
+        mel_spec_kwargs=model_cfg.model.mel_spec,
+        pretraining=pretrain,
         odeint_kwargs=dict(
             method=ode_method,
         ),
-        vocab_char_map=vocab_char_map,
     ).to(device)
 
     dtype = torch.float32 if mel_spec_type == "bigvgan" else None
@@ -395,13 +384,15 @@ def infer_process(
     device=device,
 ):
 
-    ref_clean_audio = process_audio(ref_clean_audio_path)
-    ref_noisy_audio = process_audio(ref_noisy_audio_path)
-    gen_noisy_audio = process_audio(gen_noisy_audio_path)
+    ref_clean_audio = process_audio(ref_clean_audio_path, device=device)
+    ref_noisy_audio = process_audio(ref_noisy_audio_path, device=device)
+    gen_noisy_audio = process_audio(gen_noisy_audio_path, device=device)
     
     max_chunk_size = 30 * target_sample_rate # 30 secs of audio
     if gen_noisy_audio.shape[0] > max_chunk_size:
         gen_noisy_audio_batches = gen_noisy_audio.split(max_chunk_size)
+    else:
+        gen_noisy_audio_batches = [gen_noisy_audio]
     
         
     return infer_batch_process(
@@ -448,16 +439,20 @@ def infer_batch_process(
     spectrograms = []
 
     for i, gen_noisy_audio_sample in enumerate(progress.tqdm(gen_noisy_audio_batches)):
-        silence = torch.zeros((0.5 * target_sample_rate), device=device) # added 0.5 sec silence
-        noisy_audio = torch.cat([ref_noisy_audio, silence, gen_noisy_audio_sample], dim=0)    
+        
+        print("oh my target sample rate : ", target_sample_rate)
+        silence = torch.zeros((1, int(0.5 * target_sample_rate)), device=device) # added 0.5 sec silence
+        print(ref_noisy_audio.shape, silence.shape, gen_noisy_audio_sample.shape)
+        noisy_audio = torch.cat([ref_noisy_audio, silence, gen_noisy_audio_sample], dim=1)    
         if fix_duration is not None:
+            print("fixing duration !!!")
             duration = int(fix_duration * target_sample_rate)
         else:
-            duration = ref_clean_audio.shape[0] + silence.shape[0] + int(ref_clean_audio.shape[0] / ref_noisy_audio.shape[0] * gen_noisy_audio_sample.shape[0] / speed)
+            duration = ref_clean_audio.shape[1] + silence.shape[1] + int(ref_clean_audio.shape[1] / ref_noisy_audio.shape[1] * gen_noisy_audio_sample.shape[1] / speed)
         
         duration /= hop_length
         
-        ref_clean_audio_len = ref_clean_audio.shape[0] / hop_length
+        ref_clean_audio_len = int(ref_clean_audio.shape[1] / hop_length)
         
 
 

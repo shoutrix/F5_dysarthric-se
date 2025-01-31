@@ -66,19 +66,16 @@ parser.add_argument(
     help="The path to model checkpoint .pt, leave blank to use default",
 )
 parser.add_argument(
-    "-r",
     "--ref_clean_audio",
     type=str,
     help="The reference audio file.",
 )
 parser.add_argument(
-    "-r",
     "--ref_noisy_audio",
     type=str,
     help="The reference audio file.",
 )
 parser.add_argument(
-    "-r",
     "--gen_noisy_audio",
     type=str,
     help="The reference audio file.",
@@ -94,6 +91,12 @@ parser.add_argument(
     "--output_dir",
     type=str,
     help="The path to output folder",
+)
+
+parser.add_argument(
+    "--pretrain",
+    type=bool,
+    default=True,
 )
 
 parser.add_argument(
@@ -168,7 +171,7 @@ ckpt_file = args.ckpt_file or config.get("ckpt_file", "")
 
 ref_clean_audio_path = args.ref_clean_audio
 ref_noisy_audio_path = args.ref_noisy_audio
-gen_noisy_audio_path = args.gen_noisy_audip
+gen_noisy_audio_path = args.gen_noisy_audio
 gen_file = args.gen_file
 
 output_dir = args.output_dir or config.get("output_dir", "tests")
@@ -224,7 +227,7 @@ vocoder = load_vocoder(vocoder_name=vocoder_name, is_local=load_vocoder_from_loc
 
 if model == "F5-TTS":
     model_cls = DiT
-    model_cfg = OmegaConf.load(model_cfg).model.arch
+    model_cfg = OmegaConf.load(model_cfg)
     if not ckpt_file:  # path not specified, download from repo
         if vocoder_name == "vocos":
             repo_name = "F5-TTS"
@@ -238,20 +241,20 @@ if model == "F5-TTS":
             ckpt_step = 1250000
             ckpt_file = str(cached_path(f"hf://SWivid/{repo_name}/{exp_name}/model_{ckpt_step}.pt"))
 
-elif model == "E2-TTS":
-    assert args.model_cfg is None, "E2-TTS does not support custom model_cfg yet"
-    assert vocoder_name == "vocos", "E2-TTS only supports vocoder vocos yet"
-    model_cls = UNetT
-    model_cfg = dict(dim=1024, depth=24, heads=16, ff_mult=4)
-    if not ckpt_file:  # path not specified, download from repo
-        repo_name = "E2-TTS"
-        exp_name = "E2TTS_Base"
-        ckpt_step = 1200000
-        ckpt_file = str(cached_path(f"hf://SWivid/{repo_name}/{exp_name}/model_{ckpt_step}.safetensors"))
-        # ckpt_file = f"ckpts/{exp_name}/model_{ckpt_step}.pt"  # .pt | .safetensors; local path
+# elif model == "E2-TTS":
+#     assert args.model_cfg is None, "E2-TTS does not support custom model_cfg yet"
+#     assert vocoder_name == "vocos", "E2-TTS only supports vocoder vocos yet"
+#     model_cls = UNetT
+#     model_cfg = dict(dim=1024, depth=24, heads=16, ff_mult=4)
+#     if not ckpt_file:  # path not specified, download from repo
+#         repo_name = "E2-TTS"
+#         exp_name = "E2TTS_Base"
+#         ckpt_step = 1200000
+#         ckpt_file = str(cached_path(f"hf://SWivid/{repo_name}/{exp_name}/model_{ckpt_step}.safetensors"))
+#         # ckpt_file = f"ckpts/{exp_name}/model_{ckpt_step}.pt"  # .pt | .safetensors; local path
 
 print(f"Using {model}...")
-ema_model = load_model(model_cls, model_cfg, ckpt_file, mel_spec_type=vocoder_name)
+ema_model = load_model(model_cls, model_cfg, ckpt_file, mel_spec_type=vocoder_name, pretrain=args.pretrain)
 
 
 # inference process
