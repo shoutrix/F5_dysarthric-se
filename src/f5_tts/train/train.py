@@ -6,16 +6,15 @@ import wandb
 import hydra
 import torch
 from f5_tts.model import CFM, DiT, Trainer, UNetT
-from f5_tts.model.dysarthric_dataset import CustomDataset
-from f5_tts.model.utils import get_tokenizer
+from f5_tts.model.dataset import CustomDataset
 
-os.chdir("/speech/shoutrik/dysarthric_exp/F5_EnhancementFT/F5-TTS/")  # change working directory to root of project (local editable)
+os.chdir("/speech/shoutrik/dysarthric_exp/F5_dysarthric-se")  # change working directory to root of project (local editable)
 
 os.environ["OMP_NUM_THREADS"] = str(4)
 os.environ["MKL_NUM_THREADS"] = str(4)
 torch.set_num_threads(4)
 
-@hydra.main(version_base="1.3", config_path="/speech/shoutrik/dysarthric_exp/F5_EnhancementFT/F5-TTS/src/f5_tts/configs", config_name="F5TTS_enhance_Small_train")
+@hydra.main(version_base="1.3", config_path="/speech/shoutrik/dysarthric_exp/F5_dysarthric-se/src/f5_tts/configs/", config_name="F5TTS_enhance_Small_train")
 def main(cfg):
     
     print("config --->")
@@ -24,9 +23,9 @@ def main(cfg):
     # tokenizer = cfg.model.tokenizer
     mel_spec_type = cfg.model.mel_spec.mel_spec_type
     exp_name = "F5TTS_small_LibriDys_noisy_clean_02" # change this for a new experiment
-    metadata = "/speech/shoutrik/speech_enhancement/F5-TTS/data/libri_noisy_dataset/train.parquet" # make sure all wav files of dysarthric dataset are within 0.3 to 30 sec duration
-    ckpt_save_dir = f"/speech/shoutrik/speech_enhancement/F5-TTS/ckpts/{exp_name}"
-    wandb_resume_id = wandb.util.generate_id() # replace with a new id for a new experiment. Generate with wandb.util.generate_id() after wandb.login(key=wandb_api_key)
+    metadata = "/speech/shoutrik/dysarthric_exp/F5_dysarthric-se/data/libri_noisy_dataset/train.parquet" # make sure all wav files of dysarthric dataset are within 0.3 to 30 sec duration
+    ckpt_save_dir = f"/speech/shoutrik/dysarthric_exp/F5_dysarthric-se/ckpts/{exp_name}"
+    wandb_resume_id = "zo4vzara" # replace with a new id for a new experiment. Generate with wandb.util.generate_id() after wandb.login(key=wandb_api_key)
     wandb_project="speech_enhancement" # don't change
 
     # set model

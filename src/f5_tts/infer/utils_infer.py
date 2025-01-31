@@ -359,13 +359,27 @@ def preprocess_ref_audio_text(ref_audio_orig, ref_text, clip_short=True, show_in
     return ref_audio, ref_text
 
 
+def process_audio(path, device):
+    audio, sr = torchaudio.load(path)
+    if audio.shape[0] > 1:
+        audio = torch.mean(audio, dim=0)
+    rms = torch.sqrt(torch.mean(torch.square(audio)))
+    if rms < target_rms:
+        audio = audio * target_rms / rms
+    if sr != target_sample_rate:
+        resampler = torchaudio.transforms.Resample(sr, target_sample_rate)
+        audio = resampler(audio)
+    audio = audio.to(device)
+    return audio
+
+
+
+
 # infer process: chunk text -> infer batches [i.e. infer_batch_process()]
-
-
 def infer_process(
-    ref_audio,
-    ref_text,
-    gen_text,
+    ref_clean_audio_path,
+    ref_noisy_audio_path,
+    gen_noisy_audio_path,
     model_obj,
     vocoder,
     mel_spec_type=mel_spec_type,
@@ -380,19 +394,20 @@ def infer_process(
     fix_duration=fix_duration,
     device=device,
 ):
-    # Split the input text into batches
-    audio, sr = torchaudio.load(ref_audio)
-    max_chars = int(len(ref_text.encode("utf-8")) / (audio.shape[-1] / sr) * (25 - audio.shape[-1] / sr))
-    gen_text_batches = chunk_text(gen_text, max_chars=max_chars)
-    for i, gen_text in enumerate(gen_text_batches):
-        print(f"gen_text {i}", gen_text)
-    print("\n")
 
-    show_info(f"Generating audio in {len(gen_text_batches)} batches...")
+    ref_clean_audio = process_audio(ref_clean_audio_path)
+    ref_noisy_audio = process_audio(ref_noisy_audio_path)
+    gen_noisy_audio = process_audio(gen_noisy_audio_path)
+    
+    max_chunk_size = 30 * target_sample_rate # 30 secs of audio
+    if gen_noisy_audio.shape[0] > max_chunk_size:
+        gen_noisy_audio_batches = gen_noisy_audio.split(max_chunk_size)
+    
+        
     return infer_batch_process(
-        (audio, sr),
-        ref_text,
-        gen_text_batches,
+        ref_clean_audio,
+        ref_noisy_audio,
+        gen_noisy_audio_batches,
         model_obj,
         vocoder,
         mel_spec_type=mel_spec_type,
@@ -412,9 +427,9 @@ def infer_process(
 
 
 def infer_batch_process(
-    ref_audio,
-    ref_text,
-    gen_text_batches,
+    ref_clean_audio,
+    ref_noisy_audio,
+    gen_noisy_audio_batches,
     model_obj,
     vocoder,
     mel_spec_type="vocos",
@@ -428,42 +443,29 @@ def infer_batch_process(
     fix_duration=None,
     device=None,
 ):
-    audio, sr = ref_audio
-    if audio.shape[0] > 1:
-        audio = torch.mean(audio, dim=0, keepdim=True)
-
-    rms = torch.sqrt(torch.mean(torch.square(audio)))
-    if rms < target_rms:
-        audio = audio * target_rms / rms
-    if sr != target_sample_rate:
-        resampler = torchaudio.transforms.Resample(sr, target_sample_rate)
-        audio = resampler(audio)
-    audio = audio.to(device)
 
     generated_waves = []
     spectrograms = []
 
-    if len(ref_text[-1].encode("utf-8")) == 1:
-        ref_text = ref_text + " "
-    for i, gen_text in enumerate(progress.tqdm(gen_text_batches)):
-        # Prepare the text
-        text_list = [ref_text + gen_text]
-        final_text_list = convert_char_to_pinyin(text_list)
-
-        ref_audio_len = audio.shape[-1] // hop_length
+    for i, gen_noisy_audio_sample in enumerate(progress.tqdm(gen_noisy_audio_batches)):
+        silence = torch.zeros((0.5 * target_sample_rate), device=device) # added 0.5 sec silence
+        noisy_audio = torch.cat([ref_noisy_audio, silence, gen_noisy_audio_sample], dim=0)    
         if fix_duration is not None:
-            duration = int(fix_duration * target_sample_rate / hop_length)
+            duration = int(fix_duration * target_sample_rate)
         else:
-            # Calculate duration
-            ref_text_len = len(ref_text.encode("utf-8"))
-            gen_text_len = len(gen_text.encode("utf-8"))
-            duration = ref_audio_len + int(ref_audio_len / ref_text_len * gen_text_len / speed)
+            duration = ref_clean_audio.shape[0] + silence.shape[0] + int(ref_clean_audio.shape[0] / ref_noisy_audio.shape[0] * gen_noisy_audio_sample.shape[0] / speed)
+        
+        duration /= hop_length
+        
+        ref_clean_audio_len = ref_clean_audio.shape[0] / hop_length
+        
+
 
         # inference
         with torch.inference_mode():
             generated, _ = model_obj.sample(
-                cond=audio,
-                text=final_text_list,
+                cond=ref_clean_audio,
+                noisy_audio=noisy_audio,
                 duration=duration,
                 steps=nfe_step,
                 cfg_strength=cfg_strength,
@@ -471,14 +473,13 @@ def infer_batch_process(
             )
 
             generated = generated.to(torch.float32)
-            generated = generated[:, ref_audio_len:, :]
+            generated = generated[:, ref_clean_audio_len:, :]
             generated_mel_spec = generated.permute(0, 2, 1)
             if mel_spec_type == "vocos":
                 generated_wave = vocoder.decode(generated_mel_spec)
             elif mel_spec_type == "bigvgan":
                 generated_wave = vocoder(generated_mel_spec)
-            if rms < target_rms:
-                generated_wave = generated_wave * rms / target_rms
+
 
             # wav -> numpy
             generated_wave = generated_wave.squeeze().cpu().numpy()

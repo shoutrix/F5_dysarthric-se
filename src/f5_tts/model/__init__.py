@@ -1,5 +1,5 @@
 # from f5_tts.model.cfm import CFM
-from f5_tts.model.cfm2 import CFM
+from f5_tts.model.cfm import CFM
 
 from f5_tts.model.backbones.unett import UNetT
 from f5_tts.model.backbones.dit import DiT
