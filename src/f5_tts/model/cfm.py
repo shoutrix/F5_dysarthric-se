@@ -53,7 +53,7 @@ class CFM(nn.Module):
     ):
         super().__init__()
         
-        print("initializing cfm2")
+        # print("initializing cfm2")
 
         self.frac_lengths_mask = frac_lengths_mask
 
@@ -112,10 +112,10 @@ class CFM(nn.Module):
         self.eval()
         # raw wave
         
-        print("\n\nshapes : ")
-        print(cond.shape, noisy_audio.shape)
-        # cond = cond[:, :24000]
-        print(cond.shape, noisy_audio.shape)
+        # print("\n\nshapes : ")
+        # print(cond.shape, noisy_audio.shape)
+        # # cond = cond[:, :24000]
+        # print(cond.shape, noisy_audio.shape)
 
 
         if cond.ndim == 2:
@@ -135,8 +135,8 @@ class CFM(nn.Module):
         batch, seq_len, dtype, device = *cond.shape[:2], cond.dtype, cond.device
         assert batch == 1, f"batch size 1 is only supported but found {batch}"
         
-        print(f"infering pretrained model : {self.pretraining}")
-        print("shapes : ", cond.shape, noisy_audio.shape)
+        # print(f"infering pretrained model : {self.pretraining}")
+        # print("shapes : ", cond.shape, noisy_audio.shape)
 
         noisy_max_len = noisy_audio.shape[1]
         cond_max_len = cond.shape[1]

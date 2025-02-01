@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
+from tqdm import tqdm
 
 import numpy as np
 import soundfile as sf
@@ -194,7 +195,7 @@ if gen_file:
     if gen_file.endswith(".scp"):
         with open(gen_file, "r", encoding="utf-8") as f:
             gen_noisy_audio_list = f.read().splitlines()
-            gen_noisy_audio_list = [l.strip().split(maxsplit=1)[1] for l in gen_noisy_audio_list]
+            gen_noisy_audio_list = [l.strip().split(maxsplit=1)[1] for l in gen_noisy_audio_list if len(l.strip().split())>1]
     elif gen_file.endswith(".tsv"):
         with open(gen_file, "r", encoding="utf-8") as f:
             gen_noisy_audio_list = f.read().splitlines()
@@ -266,7 +267,7 @@ def main():
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
-    for noisy_audio_sample in gen_noisy_audio_list:
+    for noisy_audio_sample in tqdm(gen_noisy_audio_list):
         
         noisy_wav_name = os.path.basename(noisy_audio_sample)
         
@@ -293,7 +294,7 @@ def main():
             sf.write(f.name, audio_segment, final_sample_rate)
             if remove_silence:
                 remove_silence_for_generated_wav(f.name)
-            print(f.name)
+            # print(f.name)
 
 
 if __name__ == "__main__":

@@ -438,14 +438,14 @@ def infer_batch_process(
     generated_waves = []
     spectrograms = []
 
-    for i, gen_noisy_audio_sample in enumerate(progress.tqdm(gen_noisy_audio_batches)):
+    for i, gen_noisy_audio_sample in enumerate(gen_noisy_audio_batches):
         
-        print("oh my target sample rate : ", target_sample_rate)
+        # print("oh my target sample rate : ", target_sample_rate)
         silence = torch.zeros((1, int(0.5 * target_sample_rate)), device=device) # added 0.5 sec silence
-        print(ref_noisy_audio.shape, silence.shape, gen_noisy_audio_sample.shape)
+        # print(ref_noisy_audio.shape, silence.shape, gen_noisy_audio_sample.shape)
         noisy_audio = torch.cat([ref_noisy_audio, silence, gen_noisy_audio_sample], dim=1)    
         if fix_duration is not None:
-            print("fixing duration !!!")
+            # print("fixing duration !!!")
             duration = int(fix_duration * target_sample_rate)
         else:
             duration = ref_clean_audio.shape[1] + silence.shape[1] + int(ref_clean_audio.shape[1] / ref_noisy_audio.shape[1] * gen_noisy_audio_sample.shape[1] / speed)
