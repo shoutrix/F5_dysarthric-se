@@ -163,6 +163,7 @@ class Trainer:
         self.accelerator.wait_for_everyone()
         if "model_last.pt" in os.listdir(self.checkpoint_path):
             latest_checkpoint = "model_last.pt"
+            print("model_last.pt found. Yay !!!")
         else:
             latest_checkpoint = sorted(
                 [f for f in os.listdir(self.checkpoint_path) if f.endswith(".pt")],
@@ -183,7 +184,7 @@ class Trainer:
             #     ema_model_state_dict["ema_model.clean_pad_embed.weight"] = self.ema_model.ema_model.clean_pad_embed.weight
                 # ema_model_state_dict["clean_pad_embed"] = self.ema_model.ema_model.clean_pad_embed
 
-            self.ema_model.load_state_dict(ema_model_state_dict, strict=False)
+            self.ema_model.load_state_dict(ema_model_state_dict, strict=True)
 
         if "step" in checkpoint:
             # patch for backward compatibility, 305e3ea
@@ -210,6 +211,8 @@ class Trainer:
 
         del checkpoint
         gc.collect()
+        
+        step = 0 # changed : shoutrik
         return step
 
     def train(self, train_dataset: Dataset, num_workers=16, resumable_with_seed: int = None):
@@ -310,7 +313,7 @@ class Trainer:
             for batch in progress_bar:
                 with self.accelerator.accumulate(self.model):
                     noisy_mel = batch["noisy_mel"].permute(0, 2, 1)
-                    clean_mel = batch["clean_mel"].permute(0, 2, 1)
+                    clean_mel = batch["clean_mel"]
                     noisy_mel_lengths = batch["noisy_mel_lengths"]
                     clean_mel_lengths = batch["clean_mel_lengths"]
                     

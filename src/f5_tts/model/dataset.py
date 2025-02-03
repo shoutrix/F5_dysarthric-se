@@ -140,7 +140,8 @@ class DynamicBatchSampler(Sampler[list[int]]):
             indices, desc=f"Creating dynamic batches with {frames_threshold} audio frames and max batch size of {max_samples} per gpu"
         ):
             max_frame_len = max(max_frame_len, frame_len)
-            if batch_frames + frame_len <= self.frames_threshold and (max_samples == 0 or len(batch) < max_samples) and (max_frame_len*len(batch)<=frames_threshold):
+            if batch_frames + frame_len <= self.frames_threshold and (len(batch) < max_samples) and (max_frame_len*len(batch)<=frames_threshold):
+                print(batch_frames, frame_len, self.frames_threshold)
                 batch.append(idx)
                 batch_frames += frame_len
             else:
@@ -195,14 +196,6 @@ def collate_fn(batch):
         padded_noisy_mel_specs.append(padded_spec)
 
     noisy_mel_specs = torch.stack(padded_noisy_mel_specs)
-    
-    padded_clean_mel_specs = []
-    for spec in clean_mel_specs:  # TODO. maybe records mask for attention here
-        padding = (0, max_noisy_mel_length - spec.size(-1))
-        padded_spec = F.pad(spec, padding, value=0)
-        padded_clean_mel_specs.append(padded_spec)
-
-    clean_mel_specs = torch.stack(padded_clean_mel_specs)
     
     # print(noisy_mel_specs.shape, clean_mel_specs.shape)
 

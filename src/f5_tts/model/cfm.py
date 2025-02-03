@@ -81,6 +81,7 @@ class CFM(nn.Module):
         self.pad_with_filler = pad_with_filler
 
         self.clean_pad_embed = nn.Embedding(1, num_channels)
+        self.clean_pad_embed.weight.requires_grad = False
         # self.clean_pad_embed = nn.Parameter(torch.randn(1, num_channels))
         self.pretraining = pretraining
             
@@ -205,21 +206,32 @@ class CFM(nn.Module):
         batch, dtype, device, _σ1 = len(clean_mel), noisy_mel.dtype, self.device, self.sigma        
         max_noisy_mel = torch.max(noisy_mel_lengths)
             
+        padded_clean_mel = []        
         if self.pad_with_filler:
-            padded_clean_mel = []        
+            print("padding with filler")
             for mel in clean_mel:
                 mel = mel.transpose(0,1).to(dtype) # d,n -> n,d
                 if mel.shape[0] < max_noisy_mel:
                     pad_size = max_noisy_mel - mel.shape[0]
-                    padding = self.clean_pad_embed[0].repeat(pad_size, 1)
+                    padding = self.clean_pad_embed(torch.tensor([0], device=mel.device, dtype=torch.long)).repeat(pad_size, 1)
                     padded_mel = torch.cat([mel, padding], dim=0)
                 else:
                     padded_mel = mel[:max_noisy_mel]
                 padded_clean_mel.append(padded_mel)
             padded_clean_mel = torch.stack(padded_clean_mel)
         else:
-            padded_clean_mel = clean_mel
-            assert padded_clean_mel.shape == noisy_mel.shape
+            for mel in clean_mel:
+                mel = mel.transpose(0,1).to(device)
+                if mel.shape[0] < max_noisy_mel:
+                    pad_size = max_noisy_mel - mel.shape[0]
+                    padded_mel = F.pad(mel, (0, 0, 0, pad_size), value=0.0)
+                else:
+                    padded_mel = mel[:max_noisy_mel]
+                padded_clean_mel.append(padded_mel)
+            padded_clean_mel = torch.stack(padded_clean_mel)
+            
+        print(padded_clean_mel.shape, noisy_mel.shape)
+        assert padded_clean_mel.shape == noisy_mel.shape
 
         seq_len = padded_clean_mel.shape[1]
         mask = lens_to_mask(clean_mel_lengths, length=seq_len)
