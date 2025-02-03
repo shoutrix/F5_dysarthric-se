@@ -9,7 +9,7 @@ d - dimension
 
 from __future__ import annotations
 
-from random import random
+# from random import random
 from typing import Callable
 
 import torch
@@ -195,42 +195,34 @@ class CFM(nn.Module):
 
     def forward(
         self,
-        clean_mel, # shape : list((d,n))
-        clean_mel_lengths, # shape : (b)
         noisy_mel, # shape : (b, n, d)
         noisy_mel_lengths, # shape : (b)
+        clean_mel, # shape : list((d,n))
+        clean_mel_lengths, # shape : (b)
         noise_scheduler: str | None = None,
     ):
 
-
         batch, dtype, device, _σ1 = len(clean_mel), noisy_mel.dtype, self.device, self.sigma        
-        max_noisy_mel = torch.max(noisy_mel_lengths)
-            
-        padded_clean_mel = []        
-        if self.pad_with_filler:
-            print("padding with filler")
-            for mel in clean_mel:
-                mel = mel.transpose(0,1).to(dtype) # d,n -> n,d
-                if mel.shape[0] < max_noisy_mel:
-                    pad_size = max_noisy_mel - mel.shape[0]
-                    padding = self.clean_pad_embed(torch.tensor([0], device=mel.device, dtype=torch.long)).repeat(pad_size, 1)
-                    padded_mel = torch.cat([mel, padding], dim=0)
-                else:
-                    padded_mel = mel[:max_noisy_mel]
-                padded_clean_mel.append(padded_mel)
-            padded_clean_mel = torch.stack(padded_clean_mel)
-        else:
-            for mel in clean_mel:
-                mel = mel.transpose(0,1).to(device)
-                if mel.shape[0] < max_noisy_mel:
-                    pad_size = max_noisy_mel - mel.shape[0]
-                    padded_mel = F.pad(mel, (0, 0, 0, pad_size), value=0.0)
-                else:
-                    padded_mel = mel[:max_noisy_mel]
-                padded_clean_mel.append(padded_mel)
-            padded_clean_mel = torch.stack(padded_clean_mel)
-            
-        print(padded_clean_mel.shape, noisy_mel.shape)
+        max_noisy_mel = noisy_mel.shape[1]
+        
+        pad_with_filler_tensor = torch.tensor(self.pad_with_filler, device=device, dtype=torch.bool)
+        pad_token = torch.tensor([0], device=device, dtype=torch.long)
+        padding_vector = self.clean_pad_embed(pad_token)
+
+        padded_clean_mel = []
+        for mel in clean_mel:
+            mel = mel.transpose(0, 1).to(dtype)
+            pad_size = max(0, max_noisy_mel - mel.shape[0])
+            pad_size_tensor = torch.tensor(pad_size, device=device)
+
+            padding_filler = padding_vector.expand(pad_size_tensor, -1)
+            padding_zeros = torch.zeros((pad_size_tensor, mel.shape[1]), device=device, dtype=dtype)
+            padding = torch.where(pad_with_filler_tensor, padding_filler, padding_zeros)
+            mel_padded = torch.cat([mel, padding], dim=0)[:max_noisy_mel]
+
+            padded_clean_mel.append(mel_padded)
+
+        padded_clean_mel = torch.stack(padded_clean_mel)
         assert padded_clean_mel.shape == noisy_mel.shape
 
         seq_len = padded_clean_mel.shape[1]
@@ -259,11 +251,11 @@ class CFM(nn.Module):
 
         # only predict what is within the random mask span for infilling
         cond = torch.where(rand_span_mask[..., None], torch.zeros_like(x1), x1)
-        number_of_zeros = (cond == 0).sum().item()
+        # number_of_zeros = (cond == 0).sum().item()
 
         # transformer and cfg training with a drop rate
-        drop_audio_cond = random() < self.audio_drop_prob  # p_drop in voicebox paper
-        if random() < self.cond_drop_prob:  # p_uncond in voicebox paper
+        drop_audio_cond = torch.rand(1) < self.audio_drop_prob  # p_drop in voicebox paper
+        if torch.rand(1) < self.cond_drop_prob:  # p_uncond in voicebox paper
             drop_audio_cond = True
             drop_noisy_mel = True
         else:

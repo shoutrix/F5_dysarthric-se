@@ -132,6 +132,8 @@ class DynamicBatchSampler(Sampler[list[int]]):
             if frame_len < 2813: # 30 sec at 24kHz and 256 hop length
                 indices.append((idx, frame_len))
         indices.sort(key=lambda elem: elem[1])
+        
+        # print(indices)
 
         batch = []
         batch_frames = 0
@@ -140,11 +142,12 @@ class DynamicBatchSampler(Sampler[list[int]]):
             indices, desc=f"Creating dynamic batches with {frames_threshold} audio frames and max batch size of {max_samples} per gpu"
         ):
             max_frame_len = max(max_frame_len, frame_len)
-            if batch_frames + frame_len <= self.frames_threshold and (len(batch) < max_samples) and (max_frame_len*len(batch)<=frames_threshold):
-                print(batch_frames, frame_len, self.frames_threshold)
+            if batch_frames + frame_len <= self.frames_threshold and (max_frame_len*len(batch)<=frames_threshold):
+                # print(batch_frames)
                 batch.append(idx)
                 batch_frames += frame_len
             else:
+                # print(crash)
                 if len(batch) > 0:
                     batches.append(batch)
                 if frame_len <= self.frames_threshold:
@@ -162,9 +165,8 @@ class DynamicBatchSampler(Sampler[list[int]]):
         # if want to have different batches between epochs, may just set a seed and log it in ckpt
         # cuz during multi-gpu training, although the batch on per gpu not change between epochs, the formed general minibatch is different
         # e.g. for epoch n, use (random_seed + n)
-        # random.seed(random_seed)
-        # random.shuffle(batches)
-
+        random.seed(random_seed)
+        random.shuffle(batches)
         self.batches = batches
 
     def __iter__(self):

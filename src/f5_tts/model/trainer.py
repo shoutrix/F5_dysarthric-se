@@ -316,29 +316,18 @@ class Trainer:
                     clean_mel = batch["clean_mel"]
                     noisy_mel_lengths = batch["noisy_mel_lengths"]
                     clean_mel_lengths = batch["clean_mel_lengths"]
-                    
-                    # print(noisy_mel.shape)
-                    
-                    # print("trainer batch input shapes : ")
-                    # print(noisy_mel.shape)
-                    # print(noisy_mel_lengths)
-                    # print(clean_mel[0].shape)
-                    # print(clean_mel_lengths)
-                    
-                    # text_inputs = batch["text"]
-                    # mel_spec = batch["mel"].permute(0, 2, 1)
-                    # mel_lengths = batch["mel_lengths"]
 
                     # TODO. add duration predictor training
                     # if self.duration_predictor is not None and self.accelerator.is_local_main_process:
                     #     dur_loss = self.duration_predictor(mel_spec, lens=batch.get("durations"))
                     #     self.accelerator.log({"duration loss": dur_loss.item()}, step=global_step)
 
+                    # print("batch loaded")
                     loss, cond, pred = self.model(
-                        clean_mel=clean_mel,
                         noisy_mel=noisy_mel,
-                        clean_mel_lengths=clean_mel_lengths,
                         noisy_mel_lengths=noisy_mel_lengths,
+                        clean_mel=clean_mel,
+                        clean_mel_lengths=clean_mel_lengths,
                         noise_scheduler=self.noise_scheduler
                     )
                     self.accelerator.backward(loss)

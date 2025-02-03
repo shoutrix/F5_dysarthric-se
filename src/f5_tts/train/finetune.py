@@ -10,9 +10,9 @@ from f5_tts.model.dataset import CustomDataset
 
 os.chdir("/speech/shoutrik/dysarthric_exp/F5_dysarthric-se")  # change working directory to root of project (local editable)
 
-os.environ["OMP_NUM_THREADS"] = str(4)
-os.environ["MKL_NUM_THREADS"] = str(4)
-torch.set_num_threads(4)
+os.environ["OMP_NUM_THREADS"] = str(16)
+os.environ["MKL_NUM_THREADS"] = str(16)
+torch.set_num_threads(16)
 
 @hydra.main(version_base="1.3", config_path="/speech/shoutrik/dysarthric_exp/F5_dysarthric-se/src/f5_tts/configs/", config_name="F5TTS_Small_train")
 def main(cfg):
