@@ -23,7 +23,7 @@ def main(cfg):
     # tokenizer = cfg.model.tokenizer
     mel_spec_type = cfg.model.mel_spec.mel_spec_type
     exp_name = "F5TTS_small_PretrainEnhancement_FinetuneDysarthric" # change this for a new experiment
-    metadata = "/speech/shoutrik/dysarthric_exp/F5_dysarthric-se/data/SAPC_dataset/SAPA_data.parquet" # make sure all wav files of dysarthric dataset are within 0.3 to 30 sec duration
+    metadata = "/speech/shoutrik/dysarthric_exp/F5_dysarthric-se/data/SAPC_dataset/SAPC_data.arrow" # make sure all wav files of dysarthric dataset are within 0.3 to 30 sec duration
     ckpt_save_dir = f"/speech/shoutrik/dysarthric_exp/F5_dysarthric-se/ckpts/{exp_name}"
     wandb_resume_id = wandb.util.generate_id() # replace with a new id for a new experiment. Generate with wandb.util.generate_id() after wandb.login(key=wandb_api_key)
     wandb_project="speech_enhancement" # don't change
