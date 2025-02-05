@@ -233,13 +233,15 @@ class Trainer:
             generator = None
 
         if self.batch_size_type == "sample":
+            
+            print("size of dataset : ", len(train_dataset))
             train_dataloader = DataLoader(
                 train_dataset,
                 collate_fn=collate_fn,
                 num_workers=num_workers,
                 pin_memory=True,
                 persistent_workers=True,
-                batch_size=self.batch_size,
+                batch_size=self.max_samples,
                 shuffle=True,
                 generator=generator,
             )
@@ -312,7 +314,7 @@ class Trainer:
 
             for batch in progress_bar:
                 with self.accelerator.accumulate(self.model):
-                    noisy_mel = batch["noisy_mel"].permute(0, 2, 1)
+                    noisy_mel = batch["noisy_mel"]
                     clean_mel = batch["clean_mel"]
                     noisy_mel_lengths = batch["noisy_mel_lengths"]
                     clean_mel_lengths = batch["clean_mel_lengths"]

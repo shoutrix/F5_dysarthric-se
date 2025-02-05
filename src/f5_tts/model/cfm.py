@@ -211,8 +211,9 @@ class CFM(nn.Module):
 
         padded_clean_mel = []
         for mel in clean_mel:
-            mel = mel.transpose(0, 1).to(dtype)
-            pad_size = max(0, max_noisy_mel - mel.shape[0])
+            mel = mel.to(dtype)
+            mel = mel.to(device)
+            pad_size = max(0, 0, 0, max_noisy_mel - mel.shape[0])
             pad_size_tensor = torch.tensor(pad_size, device=device)
 
             padding_filler = padding_vector.expand(pad_size_tensor, -1)
