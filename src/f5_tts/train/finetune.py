@@ -40,7 +40,11 @@ def main(cfg):
         pad_with_filler=True,
         pretraining=False
     )
-
+    
+    train_dataset = CustomDataset(
+            metadata,
+            **cfg.model.mel_spec,
+        )
     # init trainer
     trainer = Trainer(
         model,
@@ -64,18 +68,12 @@ def main(cfg):
         mel_spec_type=mel_spec_type,
         is_local_vocoder=cfg.model.vocoder.is_local,
         local_vocoder_path=cfg.model.vocoder.local_path,
-    )
-
-    train_dataset = CustomDataset(
-            metadata,
-            **cfg.model.mel_spec,
-        )
-    
-    trainer.train(
-        train_dataset,
+        train_dataset=train_dataset,
         num_workers=cfg.datasets.num_workers,
-        resumable_with_seed=666, # seed for shuffling dataset
+        resumable_with_seed=666,
     )
+    
+    trainer.train()
 
 
 if __name__ == "__main__":

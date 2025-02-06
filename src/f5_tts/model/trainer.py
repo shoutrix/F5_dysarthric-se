@@ -49,6 +49,9 @@ class Trainer:
         mel_spec_type: str = "vocos",  # "vocos" | "bigvgan"
         is_local_vocoder: bool = False,  # use local path vocoder
         local_vocoder_path: str = "",  # local vocoder path
+        train_dataset:str = None,
+        num_workers:int  = 16,
+        resumable_with_seed: int =  42
     ):
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
@@ -128,7 +131,62 @@ class Trainer:
             self.optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=learning_rate)
         else:
             self.optimizer = AdamW(model.parameters(), lr=learning_rate)
+        if exists(resumable_with_seed):
+            generator = torch.Generator()
+            generator.manual_seed(resumable_with_seed)
+        else:
+            generator = None
+        self.resumable_with_seed = resumable_with_seed
+
+        if self.batch_size_type == "sample":
+            
+            print("size of dataset : ", len(train_dataset))
+            self.train_dataloader = DataLoader(
+                train_dataset,
+                collate_fn=collate_fn,
+                num_workers=num_workers,
+                pin_memory=True,
+                persistent_workers=True,
+                batch_size=self.max_samples,
+                shuffle=True,
+                generator=generator,
+            )
+        elif self.batch_size_type == "frame":
+            self.accelerator.even_batches = False
+            sampler = SequentialSampler(train_dataset)
+            batch_sampler = DynamicBatchSampler(
+                sampler, self.batch_size, max_samples=self.max_samples, random_seed=resumable_with_seed, drop_last=False
+            )
+            self.train_dataloader = DataLoader(
+                train_dataset,
+                collate_fn=collate_fn,
+                num_workers=num_workers,
+                pin_memory=True,
+                persistent_workers=True,
+                batch_sampler=batch_sampler,
+            )
+        else:
+            raise ValueError(f"batch_size_type must be either 'sample' or 'frame', but received {self.batch_size_type}")
+
+        #  accelerator.prepare() dispatches batches to devices;
+        #  which means the length of dataloader calculated before, should consider the number of devices
+        warmup_steps = (
+            self.num_warmup_updates * self.accelerator.num_processes
+        )  # consider a fixed warmup steps while using accelerate multi-gpu ddp
+        # otherwise by default with split_batches=False, warmup steps change with num_processes
+        total_steps = len(self.train_dataloader) * self.epochs / self.grad_accumulation_steps
+        decay_steps = total_steps - warmup_steps
+        warmup_scheduler = LinearLR(self.optimizer, start_factor=1e-8, end_factor=1.0, total_iters=warmup_steps)
+        decay_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=1e-8, total_iters=decay_steps)
+        self.scheduler = SequentialLR(
+            self.optimizer, schedulers=[warmup_scheduler, decay_scheduler], milestones=[warmup_steps]
+        )
+        self.train_dataloader, self.scheduler = self.accelerator.prepare(
+            self.train_dataloader, self.scheduler
+        )  # actual steps = 1 gpu steps / gpus
+        self.start_step = self.load_checkpoint()
         self.model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
+        # self.model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
 
     @property
     def is_main(self):
@@ -143,6 +201,7 @@ class Trainer:
                 ema_model_state_dict=self.ema_model.state_dict(),
                 scheduler_state_dict=self.scheduler.state_dict(),
                 step=step,
+                pretrained=False,
             )
             if not os.path.exists(self.checkpoint_path):
                 os.makedirs(self.checkpoint_path)
@@ -171,6 +230,9 @@ class Trainer:
             )[-1]
         # checkpoint = torch.load(f"{self.checkpoint_path}/{latest_checkpoint}", map_location=self.accelerator.device)  # rather use accelerator.load_state ಥ_ಥ
         checkpoint = torch.load(f"{self.checkpoint_path}/{latest_checkpoint}", weights_only=True, map_location="cpu")
+        
+        print(f"{self.checkpoint_path}/{latest_checkpoint}", checkpoint.keys(), checkpoint["pretrained"])
+        pretrained = checkpoint["pretrained"]
 
         # patch for backward compatibility, 305e3ea
         for key in ["ema_model.mel_spec.mel_stft.mel_scale.fb", "ema_model.mel_spec.mel_stft.spectrogram.window"]:
@@ -195,11 +257,14 @@ class Trainer:
             # print("optimizer state dict : ", checkpoint["optimizer_state_dict"])
             print(len(self.optimizer.param_groups))
 
-            self.accelerator.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"], strict=False)
-            self.accelerator.unwrap_model(self.optimizer).load_state_dict(checkpoint["optimizer_state_dict"])
-            if self.scheduler:
-                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-            step = checkpoint["step"]
+            self.accelerator.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"], strict=True)
+            #     self.accelerator.unwrap_model(self.optimizer).load_state_dict(checkpoint["optimizer_state_dict"])
+            #     if self.scheduler:
+            #         self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            #     step = checkpoint["step"]
+            print("Starting finetuning from Pretrained model. Not initializing state dict of Optimizer and Scheduler. Setting step=0")
+            step=0
+                
         else:
             checkpoint["model_state_dict"] = {
                 k.replace("ema_model.", ""): v
@@ -215,7 +280,7 @@ class Trainer:
         step = 0 # changed : shoutrik
         return step
 
-    def train(self, train_dataset: Dataset, num_workers=16, resumable_with_seed: int = None):
+    def train(self):
         if self.log_samples:
             from f5_tts.infer.utils_infer import cfg_strength, load_vocoder, nfe_step, sway_sampling_coef
 
@@ -225,67 +290,15 @@ class Trainer:
             target_sample_rate = self.accelerator.unwrap_model(self.model).mel_spec.target_sample_rate
             log_samples_path = f"{self.checkpoint_path}/samples"
             os.makedirs(log_samples_path, exist_ok=True)
-
-        if exists(resumable_with_seed):
-            generator = torch.Generator()
-            generator.manual_seed(resumable_with_seed)
-        else:
-            generator = None
-
-        if self.batch_size_type == "sample":
             
-            print("size of dataset : ", len(train_dataset))
-            train_dataloader = DataLoader(
-                train_dataset,
-                collate_fn=collate_fn,
-                num_workers=num_workers,
-                pin_memory=True,
-                persistent_workers=True,
-                batch_size=self.max_samples,
-                shuffle=True,
-                generator=generator,
-            )
-        elif self.batch_size_type == "frame":
-            self.accelerator.even_batches = False
-            sampler = SequentialSampler(train_dataset)
-            batch_sampler = DynamicBatchSampler(
-                sampler, self.batch_size, max_samples=self.max_samples, random_seed=resumable_with_seed, drop_last=False
-            )
-            train_dataloader = DataLoader(
-                train_dataset,
-                collate_fn=collate_fn,
-                num_workers=num_workers,
-                pin_memory=True,
-                persistent_workers=True,
-                batch_sampler=batch_sampler,
-            )
-        else:
-            raise ValueError(f"batch_size_type must be either 'sample' or 'frame', but received {self.batch_size_type}")
+        global_step = self.start_step
 
-        #  accelerator.prepare() dispatches batches to devices;
-        #  which means the length of dataloader calculated before, should consider the number of devices
-        warmup_steps = (
-            self.num_warmup_updates * self.accelerator.num_processes
-        )  # consider a fixed warmup steps while using accelerate multi-gpu ddp
-        # otherwise by default with split_batches=False, warmup steps change with num_processes
-        total_steps = len(train_dataloader) * self.epochs / self.grad_accumulation_steps
-        decay_steps = total_steps - warmup_steps
-        warmup_scheduler = LinearLR(self.optimizer, start_factor=1e-8, end_factor=1.0, total_iters=warmup_steps)
-        decay_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=1e-8, total_iters=decay_steps)
-        self.scheduler = SequentialLR(
-            self.optimizer, schedulers=[warmup_scheduler, decay_scheduler], milestones=[warmup_steps]
-        )
-        train_dataloader, self.scheduler = self.accelerator.prepare(
-            train_dataloader, self.scheduler
-        )  # actual steps = 1 gpu steps / gpus
-        start_step = self.load_checkpoint()
-        global_step = start_step
 
-        if exists(resumable_with_seed):
-            orig_epoch_step = len(train_dataloader)
-            skipped_epoch = int(start_step // orig_epoch_step)
-            skipped_batch = start_step % orig_epoch_step
-            skipped_dataloader = self.accelerator.skip_first_batches(train_dataloader, num_batches=skipped_batch)
+        if exists(self.resumable_with_seed):
+            orig_epoch_step = len(self.train_dataloader)
+            skipped_epoch = int(self.start_step // orig_epoch_step)
+            skipped_batch = self.start_step % orig_epoch_step
+            skipped_dataloader = self.accelerator.skip_first_batches(self.train_dataloader, num_batches=skipped_batch)
         else:
             skipped_epoch = 0
         
@@ -295,7 +308,7 @@ class Trainer:
 
         for epoch in range(skipped_epoch, self.epochs):
             self.model.train()
-            if exists(resumable_with_seed) and epoch == skipped_epoch:
+            if exists(self.resumable_with_seed) and epoch == skipped_epoch:
                 progress_bar = tqdm(
                     skipped_dataloader,
                     desc=f"Epoch {epoch+1}/{self.epochs}",
@@ -306,7 +319,7 @@ class Trainer:
                 )
             else:
                 progress_bar = tqdm(
-                    train_dataloader,
+                    self.train_dataloader,
                     desc=f"Epoch {epoch+1}/{self.epochs}",
                     unit="step",
                     disable=not self.accelerator.is_local_main_process,
